@@ -19,6 +19,13 @@ def csv_text(report):
         out.writerow([])
         out.writerow(["参考中位 °C", meta["reference"], "低温门槛 °C", meta["threshold"],
                       "参考覆盖 %", meta["reference_coverage"]])
+    if report["mode"] == "profile" and report["meta"].get("measurement"):
+        meta = report["meta"]
+        measure = meta["measurement"]
+        out.writerow([])
+        out.writerow(["冷段门槛 °C", meta["threshold"], "量宽 mm", measure["width"],
+                      "起点 mm", measure["start_distance"], "终点 mm", measure["end_distance"],
+                      "实测低温点", measure["samples"], "段内缺测", measure["gaps"]])
     return buffer.getvalue()
 
 
@@ -31,6 +38,14 @@ def overlay(temperatures, report):
         draw.rectangle((box[0], box[1], box[2] - 1, box[3] - 1), outline=color, width=width)
     if report["mode"] == "profile":
         draw.line(settings["trace"], fill="#fcf176", width=width)
+        measure = report["meta"].get("measurement")
+        if measure:
+            endpoints = [tuple(point) for point in measure["points"]]
+            draw.line(endpoints, fill="#5addca", width=width + 1)
+            radius = width * 2
+            for x, y in endpoints:
+                draw.ellipse((x - radius, y - radius, x + radius, y + radius),
+                             outline="#fbf7ed", width=width)
     if report["mode"] == "cold":
         for index, row in enumerate(report["rows"], 1):
             x0, y0, x1, y1 = row["box"]

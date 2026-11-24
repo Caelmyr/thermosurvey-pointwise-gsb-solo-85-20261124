@@ -5,6 +5,8 @@ from math import ceil, hypot
 import numpy as np
 from scipy import ndimage
 
+from image_lab.validation import Invalid
+
 from .model import MODES
 
 
@@ -84,6 +86,77 @@ def cold(temperatures, settings):
     return rows, meta
 
 
+def cold_segments(rows, threshold):
+    """Below-threshold runs; a single missing sample may be bridged, longer gaps may not."""
+    temps = [row["temperature"] for row in rows]
+    runs = []
+    start = prev = None
+    for index, temp in enumerate(temps):
+        if temp is None or temp > threshold:
+            continue
+        if start is None:
+            start = index
+        elif index - prev > 2 or (index - prev == 2 and temps[prev + 1] is not None):
+            runs.append((start, prev))
+            start = index
+        prev = index
+    if start is not None:
+        runs.append((start, prev))
+    segments = []
+    last = len(rows) - 1
+    for low, high in runs:
+        inside = temps[low:high + 1]
+        measured = [temp for temp in inside if temp is not None]
+        left_warm = low > 0 and temps[low - 1] is not None
+        right_warm = high < last and temps[high + 1] is not None
+        eligible = left_warm and right_warm
+        if low == 0 or high == last:
+            note = "剖线端头截断，不报宽度"
+        elif not eligible:
+            note = "边界缺测，不报宽度"
+        else:
+            note = None
+        segments.append({
+            "name": f"第 {len(segments) + 1} 段", "start": low, "end": high,
+            "from": low - 1 if left_warm else low, "to": high + 1 if right_warm else high,
+            "start_distance": rows[low]["distance"], "end_distance": rows[high]["distance"],
+            "width": clean_number(rows[high]["distance"] - rows[low]["distance"]) if eligible else None,
+            "min": clean_number(min(measured)), "samples": len(measured),
+            "gaps": len(inside) - len(measured),
+            "points": [rows[low]["point"], rows[high]["point"]],
+            "eligible": eligible, "note": note,
+        })
+    return segments
+
+
+def rank_segment(segment):
+    return (segment["width"], -segment["min"], -segment["gaps"])
+
+
+def segment_reason(segments, best):
+    if not segments:
+        return "剖线上没有低于门槛的读数。"
+    eligible = [segment for segment in segments if segment["eligible"]]
+    if not eligible:
+        return "低于门槛的冷段未在两侧取得较暖边界（端头截断或边界缺测），不报宽度。"
+    parts = [f"推荐量{best['name']}（{best['start_distance']}–{best['end_distance']} mm），"
+             f"宽 {best['width']} mm，最低 {best['min']} °C"]
+    if best["gaps"]:
+        parts.append(f"段内 {best['gaps']} 处单点缺测，缺测两侧均为实测低温读数，未跨越多点缺测")
+    else:
+        parts.append("段内读数连续")
+    others = [segment for segment in eligible if segment is not best]
+    if others:
+        alt = max(others, key=rank_segment)
+        detail = "连续无缺测" if not alt["gaps"] else f"含 {alt['gaps']} 处单点缺测"
+        if alt["width"] < best["width"]:
+            parts.append(f"{alt['name']}宽 {alt['width']} mm、{detail}、最低 {alt['min']} °C，"
+                         "冷读数也可信但覆盖冷带较窄，量宽取最宽一段")
+        else:
+            parts.append(f"{alt['name']}同宽、{detail}，但最低 {alt['min']} °C 更接近门槛，量宽取更冷一段")
+    return "；".join(parts) + "。"
+
+
 def profile(temperatures, settings):
     x0, y0, x1, y1 = settings["trace"]
     length = hypot(x1 - x0, y1 - y0)
@@ -95,7 +168,27 @@ def profile(temperatures, settings):
     rows = [{"point": [int(x), int(y)], "distance": clean_number(fraction * length * scale),
              "temperature": clean_number(temperatures[y, x])}
             for x, y, fraction in zip(xx, yy, samples)]
-    return rows, {"length": clean_number(length * scale), "valid": sum(row["temperature"] is not None for row in rows)}
+    threshold = settings["band_threshold"]
+    segments = cold_segments(rows, threshold)
+    best = max((segment for segment in segments if segment["eligible"]), key=rank_segment, default=None)
+    return rows, {"length": clean_number(length * scale),
+                  "valid": sum(row["temperature"] is not None for row in rows),
+                  "threshold": clean_number(threshold), "segments": segments,
+                  "recommend": segments.index(best) if best is not None else None,
+                  "reason": segment_reason(segments, best)}
+
+
+def adopt(report, measure):
+    if not isinstance(measure, dict):
+        raise Invalid("量宽冷段选择无效。")
+    start, end = measure.get("start"), measure.get("end")
+    if isinstance(start, bool) or isinstance(end, bool) or not isinstance(start, int) or not isinstance(end, int):
+        raise Invalid("量宽冷段选择无效。")
+    for segment in report["meta"].get("segments", []):
+        if segment["eligible"] and segment["start"] == start and segment["end"] == end:
+            report["meta"]["measurement"] = segment
+            return report
+    raise Invalid("所选冷段与当前剖线不符，请重新量宽。")
 
 
 def distribution(temperatures, settings):

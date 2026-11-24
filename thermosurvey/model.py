@@ -61,12 +61,12 @@ def defaults(width, height):
         "inspect": [width // 10, height // 5, width * 13 // 20, height * 17 // 20],
         "reference": [width * 7 // 10, height // 5, width * 19 // 20, height * 3 // 4],
         "trace": [width // 6, height // 2, width * 3 // 5, height // 2],
-        "delta": 3.0, "min_area": 8, "bins": 10,
+        "delta": 3.0, "min_area": 8, "bins": 10, "band_threshold": 18.0,
     }
 
 
 def settings(value, panel):
-    chosen = deepcopy(panel["settings"])
+    chosen = {**defaults(panel["width"], panel["height"]), **deepcopy(panel["settings"])}
     requested = document(value)
     missing = set(requested).difference(chosen)
     if missing:
@@ -76,7 +76,7 @@ def settings(value, panel):
         "gain": ("每码温差", 0.00001, 2), "offset": ("零码温度", -1000, 1000),
         "mm_per_pixel": ("每像素毫米数", 0.001, 10000),
         "show_lo": ("显色下限", -1000, 1000), "show_hi": ("显色上限", -1000, 1000),
-        "delta": ("温差门槛", 0.01, 100),
+        "delta": ("温差门槛", 0.01, 100), "band_threshold": ("冷段门槛", -1000, 1000),
     }
     for key, (name, lo, hi) in ranges.items():
         chosen[key] = number(chosen[key], name, lo, hi)

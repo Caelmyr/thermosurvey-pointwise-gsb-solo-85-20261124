@@ -131,6 +131,10 @@ def install(app, path):
         library.require_revision(record, revision)
         chosen = model.settings(value.get("settings"), record)
         report = prepare_report(library, record, chosen, model.mode(value.get("mode")))
+        if value.get("measure") is not None:
+            if report["mode"] != "profile":
+                raise Invalid("只有温度剖线支持冷段量宽。")
+            analysis.adopt(report, value["measure"])
         current, saved = library.retain(panel_id, revision, report)
         return jsonify(panel=current, check=saved), 201
 
