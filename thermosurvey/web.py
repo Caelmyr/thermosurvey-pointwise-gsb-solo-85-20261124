@@ -110,6 +110,15 @@ def install(app, path):
         record = library.panel(panel_id)
         return jsonify(library.revise(panel_id, value.get("revision"), model.settings(value.get("settings"), record)))
 
+    @api.post("/panels/<panel_id>/windows")
+    def windows(panel_id):
+        value = payload()
+        record = library.panel(panel_id)
+        chosen = model.settings(value.get("settings", {}), record)
+        side_mm = model.number(value.get("side_mm"), "方窗实际边长", 0.01, 1_000_000)
+        return jsonify(analysis.window_options(frame.temperature(library.source(record), chosen),
+                                               chosen, side_mm))
+
     @api.post("/panels/<panel_id>/preview")
     def preview(panel_id):
         value = payload()

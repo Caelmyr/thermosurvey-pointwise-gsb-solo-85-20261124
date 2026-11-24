@@ -3,7 +3,7 @@
 const $ = id => document.getElementById(id);
 const NS = 'http://www.w3.org/2000/svg';
 const state = {config: {}, mode: 'cold', panel: null, draft: null, report: null, archive: null,
-  selection: null, tool: null, start: null, image: null, contextOpen: false};
+  selection: null, tool: null, start: null, image: null, contextOpen: false, windowOptions: null};
 const numeric = ['gain', 'offset', 'mm_per_pixel', 'show_lo', 'show_hi', 'delta', 'min_area', 'bins'];
 const palettes = {
   iron: '#15162f,#511a61,#a02866,#df5450,#ffad64,#fff2bc',
@@ -78,6 +78,8 @@ function formSettings() {
 function showFields() {
   for (const name of numeric) $(name).value = state.draft[name];
   $('palette').value = state.draft.palette;
+  const saved = state.draft.reference_window;
+  $('window-side').value = saved ? saved.side_mm : '';
 }
 
 function sourcePosition(event) {
@@ -106,6 +108,12 @@ function drawThermogram() {
   map.classList.toggle('drawing', !!state.tool);
   const nodes = [graphic('image', {href: state.image, width, height}),
     boxDrawing(settings.inspect, '#f3e4c8', '6 4'), boxDrawing(settings.reference, '#72e4cf', '6 4')];
+  const windowBox = settings.reference_window?.box;
+  if (windowBox) {
+    const rect = boxDrawing(windowBox, '#ffd166', '0');
+    rect.setAttribute('stroke-width', 2.4);
+    nodes.push(rect);
+  }
   if (result.mode === 'profile') {
     const [x1, y1, x2, y2] = settings.trace.map(value => value + .5);
     nodes.push(graphic('line', {x1, y1, x2, y2, stroke: '#f7e976', 'stroke-width': 1.8,
@@ -132,7 +140,8 @@ function drawThermogram() {
   $('ramp').style.background = `linear-gradient(0deg,${palettes[settings.palette]})`;
   $('map-note').textContent = point ? `源热图像素 (${point.join(', ')})`
     : state.tool ? `${tools[state.tool]} · 点选${state.start ? '另一端' : '起点'}`
-      : '浅色虚框为检查区，绿色虚框为参考区。';
+      : windowBox ? '浅色虚框为检查区，绿色虚框为参考区，黄色实框为参考方窗。'
+        : '浅色虚框为检查区，绿色虚框为参考区。';
 }
 
 function drawContext() {
@@ -191,7 +200,14 @@ function summary(result) {
   if (result.mode === 'cold') {
     if (meta.reference === null) return '参考区没有有效像素，未划分低温区。';
     const omitted = meta.omitted ? ` · 另有 ${meta.omitted} 个更小区未列表` : '';
-    return `参考中位 ${meta.reference} °C · 低温门槛 ${meta.threshold} °C · 参考覆盖 ${meta.reference_coverage}%${omitted}`;
+    const source = meta.reference_window
+      ? `参考方窗（边长 ${meta.reference_window.side_mm} mm · 覆盖 ${meta.reference_coverage}%）中位 ${meta.reference} °C`
+      : meta.window_fallback
+        ? '参考方窗已不达标，已退回整块参考区；参考中位'
+        : '参考中位';
+    const reserved = meta.reserved_pixels
+      ? ` · 窗内与检查区重叠的 ${meta.reserved_pixels} px 留给参照，未计入低温区` : '';
+    return `${source}${meta.window_fallback ? ` ${meta.reference} °C` : ''} · 低温门槛 ${meta.threshold} °C${reserved}${omitted}`;
   }
   if (result.mode === 'profile') return `剖线 ${meta.length} mm · 有效样点 ${meta.valid} / ${result.rows.length}`;
   if (result.mode === 'distribution') return `有效像素 ${meta.valid} · 缺测 ${meta.missing}`;
@@ -241,6 +257,7 @@ function render() {
   $('desk').hidden = false;
   $('controls').hidden = isArchive;
   $('cold-settings').hidden = result.mode !== 'cold';
+  $('window-settings').hidden = result.mode !== 'cold' || isArchive;
   $('distribution-settings').hidden = result.mode !== 'distribution';
   $('return-live').hidden = !isArchive;
   $('save').hidden = isArchive;
@@ -261,6 +278,92 @@ function render() {
   drawThermogram();
   drawContext();
   drawReport();
+  renderWindowPanel();
+}
+
+const WINDOW_TAGS = {near: '贴近检查区', uniform: '温度更均匀'};
+
+function renderWindowPanel() {
+  const panel = $('window-settings');
+  if (panel.hidden) return;
+  const result = shown();
+  const active = result.settings.reference_window;
+  const meta = result.meta || {};
+  const activeBox = $('window-active');
+  activeBox.hidden = !active;
+  $('window-clear').hidden = !active;
+  if (active) {
+    activeBox.classList.toggle('fallback', !!meta.window_fallback);
+    const reserved = meta.reserved_pixels
+      ? ` 重叠区内 ${meta.reserved_pixels} px 留给参照，不计入低温区。` : '';
+    activeBox.textContent = meta.window_fallback
+      ? `已保存的方窗覆盖不足九成或移出参考区，本次已退回整块参考区判读，请重新推荐方窗。`
+      : `当前参考：${WINDOW_TAGS[active.choice] || '已采用方窗'} · 边长 ${active.side_mm} mm · `
+        + `中位 ${active.median} °C · 覆盖 ${meta.reference_coverage ?? '—'}%。${reserved}`;
+  }
+  const holder = $('window-candidates');
+  const options = state.windowOptions;
+  if (!options || options.settings_key !== JSON.stringify(result.settings)) {
+    holder.replaceChildren();
+    return;
+  }
+  holder.replaceChildren();
+  if (!options.candidates.length) {
+    holder.append(node('p', options.message || '没有合格方窗，继续使用整块参考区的判读。', {class: 'window-note'}));
+    return;
+  }
+  if (options.message) holder.append(node('p', options.message, {class: 'window-reason'}));
+  for (const candidate of options.candidates) {
+    const card = node('article', null,
+      {class: 'window-card' + (candidate.choice === options.recommended ? ' recommended' : '')});
+    card.append(node('h4',
+      (candidate.choice === options.recommended ? '推荐 · ' : '') + WINDOW_TAGS[candidate.choice]));
+    card.append(node('p',
+      `边长 ${options.actual_side_mm} mm（${options.side_px} px）· 覆盖 ${candidate.coverage}% · `
+      + `距检查区 ${candidate.gap_mm} mm`, {class: 'window-stats'}));
+    card.append(node('p',
+      `中位 ${candidate.median} °C · 最低 ${candidate.min} °C · 最高 ${candidate.max} °C · 标准差 ${candidate.std} °C`,
+      {class: 'window-stats'}));
+    const adopted = active && JSON.stringify(active.box) === JSON.stringify(candidate.box);
+    const adopt = node('button', adopted ? '已采用' : '采用此方窗');
+    adopt.disabled = adopted;
+    adopt.onclick = action(() => adoptWindow(candidate, options));
+    const actions = node('div', null, {class: 'actions'});
+    actions.append(adopt);
+    card.append(actions);
+    holder.append(card);
+  }
+}
+
+async function recommendWindows() {
+  const side = $('window-side').valueAsNumber;
+  if (!Number.isFinite(side) || side <= 0) throw Error('请输入方窗的实际边长（毫米）。');
+  const settings = formSettings();
+  const options = await api(panelPath() + '/windows', 'POST', {settings, side_mm: side});
+  options.settings_key = JSON.stringify(settings);
+  state.windowOptions = options;
+  renderWindowPanel();
+  if (!options.candidates.length) status(options.message || '没有合格方窗。');
+  else status(options.message);
+}
+
+async function adoptWindow(candidate, options) {
+  const settings = formSettings();
+  settings.reference_window = {
+    box: candidate.box, side_mm: options.side_mm,
+    choice: candidate.choice, median: candidate.median
+  };
+  state.windowOptions = null;
+  await refresh(settings);
+  status('已采用参考方窗，低温区按方窗有效温度中位数重新划区。');
+}
+
+async function clearWindow() {
+  const settings = formSettings();
+  settings.reference_window = null;
+  state.windowOptions = null;
+  await refresh(settings);
+  status('已改用整块参考区判读。');
 }
 
 async function loadLibrary() {
@@ -306,6 +409,7 @@ async function refresh(next = state.draft, mode = state.mode) {
   state.archive = null;
   state.report = report;
   state.selection = null;
+  state.windowOptions = null;
   showFields();
   loadArchive();
   render();
@@ -379,6 +483,14 @@ $('save').onclick = action(async () => {
 });
 $('return-live').onclick = action(() => refresh());
 $('palette').onchange = action(() => refresh(formSettings()));
+$('window-find').onclick = action(recommendWindows);
+$('window-clear').onclick = action(clearWindow);
+$('window-side').onkeydown = event => {
+  if (event.key === 'Enter') {
+    event.preventDefault();
+    action(recommendWindows)();
+  }
+};
 
 $('measure-tools').querySelectorAll('button').forEach(button => {
   button.onclick = () => {

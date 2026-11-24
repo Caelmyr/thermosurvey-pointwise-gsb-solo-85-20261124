@@ -61,8 +61,33 @@ def defaults(width, height):
         "inspect": [width // 10, height // 5, width * 13 // 20, height * 17 // 20],
         "reference": [width * 7 // 10, height // 5, width * 19 // 20, height * 3 // 4],
         "trace": [width // 6, height // 2, width * 3 // 5, height // 2],
-        "delta": 3.0, "min_area": 8, "bins": 10,
+        "delta": 3.0, "min_area": 8, "bins": 10, "reference_window": None,
     }
+
+
+WINDOW_CHOICES = ("near", "uniform")
+
+
+def reference_window(value, width, height, reference):
+    if value is None:
+        return None
+    value = document(value)
+    unknown = set(value).difference({"box", "side_mm", "choice", "median"})
+    if unknown:
+        raise Invalid("参考方窗存在未识别的设置。")
+    box = rectangle(value.get("box"), width, height, "参考方窗")
+    x0, y0, x1, y1 = box
+    if x1 - x0 != y1 - y0:
+        raise Invalid("参考方窗的宽与高应相等。")
+    rx0, ry0, rx1, ry1 = reference
+    if not (rx0 <= x0 and ry0 <= y0 and x1 <= rx1 and y1 <= ry1):
+        raise Invalid("参考方窗须整块落在参考区内。")
+    side_mm = number(value.get("side_mm"), "方窗实际边长", 0.01, 1_000_000)
+    choice = value.get("choice", "near")
+    if choice not in WINDOW_CHOICES:
+        raise Invalid("参考方窗推荐类型无效。")
+    median = number(value.get("median"), "方窗有效温度中位数", -1000, 1000)
+    return {"box": box, "side_mm": side_mm, "choice": choice, "median": median}
 
 
 def settings(value, panel):
@@ -93,6 +118,8 @@ def settings(value, panel):
     chosen["trace"] = trace
     chosen["min_area"] = integer(chosen["min_area"], "最小面积像素数", 1, width * height)
     chosen["bins"] = integer(chosen["bins"], "温度分组数", 2, 40)
+    chosen.setdefault("reference_window", None)
+    chosen["reference_window"] = reference_window(chosen["reference_window"], width, height, chosen["reference"])
     return chosen
 
 

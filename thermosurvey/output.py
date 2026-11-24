@@ -17,6 +17,10 @@ def csv_text(report):
     if report["mode"] == "cold":
         meta = report["meta"]
         out.writerow([])
+        window = meta.get("reference_window")
+        if window:
+            out.writerow(["方窗边长 mm", window["side_mm"], "方窗范围", " ".join(map(str, window["box"])),
+                          "方窗覆盖 %", meta["reference_coverage"], "留给参照像素", meta["reserved_pixels"]])
         out.writerow(["参考中位 °C", meta["reference"], "低温门槛 °C", meta["threshold"],
                       "参考覆盖 %", meta["reference_coverage"]])
     return buffer.getvalue()
@@ -29,6 +33,10 @@ def overlay(temperatures, report):
     width = max(1, min(image.size) // 180)
     for box, color in [(settings["inspect"], "#f2dac2"), (settings["reference"], "#5addca")]:
         draw.rectangle((box[0], box[1], box[2] - 1, box[3] - 1), outline=color, width=width)
+    window = settings.get("reference_window")
+    if window:
+        wx0, wy0, wx1, wy1 = window["box"]
+        draw.rectangle((wx0, wy0, wx1 - 1, wy1 - 1), outline="#ffd166", width=max(1, width + 1))
     if report["mode"] == "profile":
         draw.line(settings["trace"], fill="#fcf176", width=width)
     if report["mode"] == "cold":

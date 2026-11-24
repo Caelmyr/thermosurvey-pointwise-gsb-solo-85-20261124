@@ -78,6 +78,17 @@
           <label>低于参考 °C<input type="number" id="delta" step="any"></label>
           <label>最少低温像素<input type="number" id="min_area" step="1"></label>
         </div>
+        <div id="window-settings" hidden>
+          <h3>复勘方窗参考</h3>
+          <div class="fields">
+            <label>方窗实际边长 mm<input type="number" id="window-side" step="any" min="0.01"
+              placeholder="如 150"></label>
+          </div>
+          <div class="actions"><button id="window-find" type="button">推荐方窗</button>
+            <button id="window-clear" type="button" hidden>改用整块参考区</button></div>
+          <div id="window-active" class="window-note" hidden></div>
+          <div id="window-candidates" class="window-candidates"></div>
+        </div>
         <div class="fields" id="distribution-settings" hidden>
           <label>分布温区数<input type="number" id="bins" step="1"></label>
         </div>
