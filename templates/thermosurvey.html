@@ -32,6 +32,10 @@
       <div id="desk" hidden>
         <section class="card">
           <header class="card-head"><h2>源热图</h2><div class="map-tools">
+            <div class="view-switch" id="view-switch" hidden>
+              <button type="button" data-view="after" aria-pressed="true">修后图</button>
+              <button type="button" data-view="before" aria-pressed="false">修前图</button>
+            </div>
             <button id="show-context" type="button">看现场底图</button>
             <a id="raw" download>下载 16 位源图</a>
           </div></header>
@@ -48,6 +52,11 @@
           <svg id="chart" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 146" role="img" aria-label="温度剖线曲线" hidden></svg>
           <div id="downloads" hidden><a id="csv" download>下载 CSV</a><a id="overlay" download>下载标记热图</a></div>
           <div class="table-wrap" id="table-wrap"><table><thead id="columns"></thead><tbody id="rows"></tbody></table><p id="no-readings" hidden>当前范围没有符合条件的读数。</p></div>
+        </section>
+        <section class="card" id="probe-card" hidden>
+          <header class="card-head"><h2>点位对比 · 修前 / 修后</h2><div class="report-actions"><button id="clear-probes" type="button">清除点位</button></div></header>
+          <p class="map-note">在热图上点选位置，比较同一像素的修前、修后读数；切换修前 / 修后图时点位保留。检查框外或缺测的位置没有参加这片比较，读数留空。</p>
+          <div class="table-wrap"><table><thead><tr><th scope="col">点位（源图像素）</th><th scope="col">修前 °C</th><th scope="col">修后 °C</th><th scope="col">回暖 °C</th></tr></thead><tbody id="probe-rows"></tbody></table><p id="probe-empty" class="map-note">还没有点位，在热图上点一下。</p></div>
         </section>
       </div>
     </section>
@@ -76,7 +85,13 @@
         <nav id="modes" aria-label="检查项目"></nav>
         <div class="fields" id="cold-settings">
           <label>低于参考 °C<input type="number" id="delta" step="any"></label>
-          <label>最少低温像素<input type="number" id="min_area" step="1"></label>
+        </div>
+        <div class="fields" id="warm-settings" hidden>
+          <label>最小回暖温差 °C<input type="number" id="warm_delta" step="any"></label>
+          <label>修前热图<select id="baseline"></select></label>
+        </div>
+        <div class="fields" id="area-settings">
+          <label>最少成区像素<input type="number" id="min_area" step="1"></label>
         </div>
         <div class="fields" id="distribution-settings" hidden>
           <label>分布温区数<input type="number" id="bins" step="1"></label>

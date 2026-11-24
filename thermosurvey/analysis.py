@@ -84,6 +84,69 @@ def cold(temperatures, settings):
     return rows, meta
 
 
+def warm(after, before, settings):
+    """Find rewarmed regions inside the inspection box, comparing only pixels measured in both frames."""
+    area = settings["inspect"]
+    view_after = box_data(after, area)
+    view_before = box_data(before, area)
+    both = np.isfinite(view_after) & np.isfinite(view_before)
+    comparable = int(np.count_nonzero(both))
+    meta = {"threshold": settings["warm_delta"], "comparable": comparable,
+            "coverage": round(comparable / view_after.size * 100, 2),
+            "omitted": 0, "recommendation": None}
+    lift = np.where(both, view_after - view_before, -np.inf)
+    labels, count = ndimage.label(lift >= settings["warm_delta"])
+    sizes = np.bincount(labels.ravel(), minlength=count + 1)
+    rows = []
+    x0, y0 = area[:2]
+    boxes = ndimage.find_objects(labels)
+    for component in sorted(np.flatnonzero(sizes[1:] >= settings["min_area"]) + 1,
+                            key=lambda item: (-sizes[item], item))[:80]:
+        ys, xs = boxes[component - 1]
+        local = (labels[ys, xs] == component)
+        shaded = np.where(local, lift[ys, xs], -np.inf)
+        py, px = np.unravel_index(shaded.argmax(), shaded.shape)
+        box = [x0 + xs.start, y0 + ys.start, x0 + xs.stop, y0 + ys.stop]
+        rows.append({
+            "name": f"回暖区 {len(rows) + 1}", "box": box, "point": [box[0] + int(px), box[1] + int(py)],
+            "pixels": int(sizes[component]), "area": clean_number(sizes[component] * settings["mm_per_pixel"] ** 2, 2),
+            "mid": clean_number(np.median(shaded[local])), "peak": clean_number(shaded[py, px]),
+        })
+    meta["omitted"] = max(0, int(np.count_nonzero(sizes[1:] >= settings["min_area"])) - len(rows))
+    if rows:
+        recommend(rows, meta)
+    return rows, meta
+
+
+def recommend(rows, meta):
+    """Recommend one rewarmed region, preferring the aspect that dominates more clearly."""
+    magnitude = max(rows, key=lambda row: row["mid"])
+    coverage = max(rows, key=lambda row: row["pixels"])
+    if magnitude is coverage:
+        chosen, reason = magnitude, "both"
+    elif magnitude["mid"] / coverage["mid"] >= coverage["pixels"] / magnitude["pixels"]:
+        chosen, reason = magnitude, "magnitude"
+    else:
+        chosen, reason = coverage, "coverage"
+    chosen["recommended"] = True
+    meta["recommendation"] = {"name": chosen["name"], "point": chosen["point"], "box": chosen["box"],
+                              "reason": reason, "mid": chosen["mid"], "pixels": chosen["pixels"]}
+
+
+def probes(after, before, settings, points):
+    """Read the same pixel in both frames; positions outside the compared box stay blank."""
+    x0, y0, x1, y1 = settings["inspect"]
+    rows = []
+    for x, y in points:
+        inside = x0 <= x < x1 and y0 <= y < y1
+        later = clean_number(after[y, x]) if inside else None
+        earlier = clean_number(before[y, x]) if inside else None
+        rows.append({"point": [int(x), int(y)], "before": earlier, "after": later,
+                     "lift": clean_number(after[y, x] - before[y, x])
+                     if earlier is not None and later is not None else None})
+    return rows
+
+
 def profile(temperatures, settings):
     x0, y0, x1, y1 = settings["trace"]
     length = hypot(x1 - x0, y1 - y0)
@@ -122,12 +185,16 @@ COLUMNS = {
     "reference": {"name": "区域", "valid": "有效像素", "coverage": "覆盖 %", "min": "最低 °C",
                   "mid": "中位 °C", "max": "最高 °C", "spread": "四分位距 °C"},
     "cold": {"name": "区域", "pixels": "低温像素", "area": "面积 mm²", "min": "最低 °C", "drop": "最大温差 °C"},
+    "warm": {"name": "区域", "pixels": "回暖像素", "area": "面积 mm²", "mid": "回暖中位 °C", "peak": "最大回暖 °C"},
     "profile": {"distance": "距起点 mm", "temperature": "温度 °C"},
     "distribution": {"name": "温区 °C", "pixels": "有效像素"},
 }
 
 
-def report(temperatures, mode, settings):
-    rows, meta = OPERATIONS[mode](temperatures, settings)
+def report(temperatures, mode, settings, baseline=None):
+    if mode == "warm":
+        rows, meta = warm(temperatures, baseline, settings)
+    else:
+        rows, meta = OPERATIONS[mode](temperatures, settings)
     return {"mode": mode, "heading": MODES[mode], "settings": settings,
             "columns": COLUMNS[mode], "rows": rows, "meta": meta}

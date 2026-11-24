@@ -1,6 +1,5 @@
 """Validation for raw thermal frames and sensor-coordinate inspection settings."""
 
-from copy import deepcopy
 from math import isfinite
 
 from image_lab.validation import Invalid
@@ -11,10 +10,13 @@ PALETTES = ("iron", "gray", "cool")
 MODES = {
     "region": "区域温度",
     "cold": "低温区",
+    "warm": "回暖复查",
     "profile": "温度剖线",
     "distribution": "温度分布",
     "reference": "参考区读数",
 }
+
+MAX_PROBES = 30
 
 
 def document(value):
@@ -61,12 +63,25 @@ def defaults(width, height):
         "inspect": [width // 10, height // 5, width * 13 // 20, height * 17 // 20],
         "reference": [width * 7 // 10, height // 5, width * 19 // 20, height * 3 // 4],
         "trace": [width // 6, height // 2, width * 3 // 5, height // 2],
-        "delta": 3.0, "min_area": 8, "bins": 10,
+        "delta": 3.0, "warm_delta": 1.0, "min_area": 8, "bins": 10,
     }
 
 
+def migrate(saved, panel):
+    """Fill settings introduced after a panel was stored."""
+    chosen = defaults(panel["width"], panel["height"])
+    chosen.update(saved)
+    return chosen
+
+
+def point_list(value, width, height):
+    if not isinstance(value, list) or not 1 <= len(value) <= MAX_PROBES:
+        raise Invalid(f"请提供 1 至 {MAX_PROBES} 个点位。")
+    return [coordinates(point, (width - 1, height - 1), "点位") for point in value]
+
+
 def settings(value, panel):
-    chosen = deepcopy(panel["settings"])
+    chosen = migrate(panel["settings"], panel)
     requested = document(value)
     missing = set(requested).difference(chosen)
     if missing:
@@ -76,7 +91,7 @@ def settings(value, panel):
         "gain": ("每码温差", 0.00001, 2), "offset": ("零码温度", -1000, 1000),
         "mm_per_pixel": ("每像素毫米数", 0.001, 10000),
         "show_lo": ("显色下限", -1000, 1000), "show_hi": ("显色上限", -1000, 1000),
-        "delta": ("温差门槛", 0.01, 100),
+        "delta": ("温差门槛", 0.01, 100), "warm_delta": ("最小回暖温差", 0.01, 100),
     }
     for key, (name, lo, hi) in ranges.items():
         chosen[key] = number(chosen[key], name, lo, hi)

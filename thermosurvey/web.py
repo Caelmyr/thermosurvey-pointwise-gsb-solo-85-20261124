@@ -16,8 +16,28 @@ def payload():
     return model.document(request.get_json(silent=True))
 
 
-def prepare_report(library, panel, chosen, mode):
-    return analysis.report(frame.temperature(library.source(panel), chosen), mode, chosen)
+def baseline_record(library, panel, baseline_id):
+    if not baseline_id:
+        raise Invalid("请先从热图库选一张修前热图。")
+    baseline = library.panel(baseline_id)
+    if baseline["id"] == panel["id"]:
+        raise Invalid("修前热图不能是当前这张。")
+    if (baseline["width"], baseline["height"]) != (panel["width"], panel["height"]):
+        raise Invalid("修前热图与当前热图尺寸不一致，无法逐像素比较。")
+    return baseline
+
+
+def prepare_report(library, panel, chosen, mode, baseline_id=None):
+    temperatures = frame.temperature(library.source(panel), chosen)
+    if mode != "warm":
+        return analysis.report(temperatures, mode, chosen)
+    baseline = baseline_record(library, panel, baseline_id)
+    before = frame.temperature(library.source(baseline), baseline["settings"])
+    result = analysis.report(temperatures, mode, chosen, before)
+    result["baseline"] = {"id": baseline["id"], "title": baseline["title"], "source": baseline["source"],
+                          "settings": {"gain": baseline["settings"]["gain"],
+                                       "offset": baseline["settings"]["offset"]}}
+    return result
 
 
 def png_response(image, name=None):
@@ -43,7 +63,8 @@ def install(app, path):
 
     @api.get("/panels")
     def panels():
-        return jsonify(library.list())
+        return jsonify([{**record, "settings": model.migrate(record["settings"], record)}
+                        for record in library.list()])
 
     @api.post("/demo")
     def sample():
@@ -62,7 +83,8 @@ def install(app, path):
 
     @api.get("/panels/<panel_id>")
     def panel(panel_id):
-        return jsonify(library.panel(panel_id))
+        record = library.panel(panel_id)
+        return jsonify({**record, "settings": model.migrate(record["settings"], record)})
 
     @api.get("/panels/<panel_id>/raw.png")
     def raw(panel_id):
@@ -115,7 +137,8 @@ def install(app, path):
         value = payload()
         record = library.panel(panel_id)
         chosen = model.settings(value.get("settings", {}), record)
-        return jsonify(prepare_report(library, record, chosen, model.mode(value.get("mode"))))
+        mode = model.mode(value.get("mode"))
+        return jsonify(prepare_report(library, record, chosen, mode, value.get("baseline")))
 
     @api.post("/panels/<panel_id>/view.png")
     def view(panel_id):
@@ -130,7 +153,8 @@ def install(app, path):
         revision = value.get("revision")
         library.require_revision(record, revision)
         chosen = model.settings(value.get("settings"), record)
-        report = prepare_report(library, record, chosen, model.mode(value.get("mode")))
+        mode = model.mode(value.get("mode"))
+        report = prepare_report(library, record, chosen, mode, value.get("baseline"))
         current, saved = library.retain(panel_id, revision, report)
         return jsonify(panel=current, check=saved), 201
 
@@ -149,5 +173,27 @@ def install(app, path):
         report = library.check(panel_id, check_id)
         temperatures = frame.temperature(library.source(report), report["settings"])
         return png_response(output.overlay(temperatures, report), "thermogram-annotated.png")
+
+    @api.get("/panels/<panel_id>/checks/<check_id>/baseline.png")
+    def baseline_png(panel_id, check_id):
+        report = library.check(panel_id, check_id)
+        baseline = report.get("baseline")
+        if not baseline:
+            raise NotFound("这份检查没有修前热图。")
+        before = frame.temperature(library.source(baseline), baseline["settings"])
+        return png_response(frame.paint(before, report["settings"]))
+
+    @api.post("/panels/<panel_id>/checks/<check_id>/probes")
+    def check_probes(panel_id, check_id):
+        value = payload()
+        record = library.panel(panel_id)
+        report = library.check(panel_id, check_id)
+        baseline = report.get("baseline")
+        if not baseline:
+            raise Invalid("这份检查没有修前热图，不能比较点位。")
+        points = model.point_list(value.get("points"), record["width"], record["height"])
+        after = frame.temperature(library.source(report), report["settings"])
+        before = frame.temperature(library.source(baseline), baseline["settings"])
+        return jsonify(rows=analysis.probes(after, before, report["settings"], points))
 
     app.register_blueprint(api)

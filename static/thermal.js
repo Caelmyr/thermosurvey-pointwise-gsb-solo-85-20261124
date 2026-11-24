@@ -3,8 +3,9 @@
 const $ = id => document.getElementById(id);
 const NS = 'http://www.w3.org/2000/svg';
 const state = {config: {}, mode: 'cold', panel: null, draft: null, report: null, archive: null,
-  selection: null, tool: null, start: null, image: null, contextOpen: false};
-const numeric = ['gain', 'offset', 'mm_per_pixel', 'show_lo', 'show_hi', 'delta', 'min_area', 'bins'];
+  selection: null, tool: null, start: null, image: null, contextOpen: false,
+  panels: [], baseline: null, view: 'after', probes: []};
+const numeric = ['gain', 'offset', 'mm_per_pixel', 'show_lo', 'show_hi', 'delta', 'warm_delta', 'min_area', 'bins'];
 const palettes = {
   iron: '#15162f,#511a61,#a02866,#df5450,#ffad64,#fff2bc',
   gray: '#15182a,#f7f7ed', cool: '#253e73,#478ba6,#71bcac,#e4e7aa'
@@ -64,6 +65,7 @@ async function api(path, method = 'GET', value, type = 'json') {
 const panelPath = () => '/panels/' + state.panel.id;
 const shown = () => state.archive || state.report;
 const format = value => value ?? '—';
+const probing = () => state.archive?.mode === 'warm' && !!state.archive.baseline;
 
 function formSettings() {
   const draft = {...state.draft, palette: $('palette').value};
@@ -103,7 +105,7 @@ function drawThermogram() {
   const map = $('map');
   map.setAttribute('viewBox', `0 0 ${width} ${height}`);
   map.style.aspectRatio = `${width} / ${height}`;
-  map.classList.toggle('drawing', !!state.tool);
+  map.classList.toggle('drawing', !!state.tool || probing());
   const nodes = [graphic('image', {href: state.image, width, height}),
     boxDrawing(settings.inspect, '#f3e4c8', '6 4'), boxDrawing(settings.reference, '#72e4cf', '6 4')];
   if (result.mode === 'profile') {
@@ -111,9 +113,21 @@ function drawThermogram() {
     nodes.push(graphic('line', {x1, y1, x2, y2, stroke: '#f7e976', 'stroke-width': 1.8,
       'vector-effect': 'non-scaling-stroke'}));
   }
-  if (result.mode === 'cold') {
+  if (result.mode === 'cold' || result.mode === 'warm') {
     result.rows.forEach((row, index) => {
-      nodes.push(boxDrawing(row.box, index === state.selection ? '#82f2d5' : '#fff9ec', '0'));
+      const stroke = index === state.selection ? '#82f2d5' : row.recommended ? '#f7c873' : '#fff9ec';
+      nodes.push(boxDrawing(row.box, stroke, '0'));
+    });
+  }
+  if (probing()) {
+    const radius = Math.max(2.5, Math.min(width, height) / 58);
+    const font = Math.max(7, Math.min(width, height) / 30);
+    state.probes.forEach((probe, index) => {
+      const [x, y] = probe.point.map(value => value + .5);
+      nodes.push(graphic('circle', {cx: x, cy: y, r: radius, fill: '#22192688', stroke: '#f7c873',
+        'stroke-width': 1.6, 'vector-effect': 'non-scaling-stroke'}));
+      nodes.push(graphic('text', {x, y: y + font * .35, 'text-anchor': 'middle', 'font-size': font,
+        fill: '#ffe9c4', 'pointer-events': 'none'}, String(index + 1)));
     });
   }
   const point = result.rows[state.selection]?.point;
@@ -131,8 +145,9 @@ function drawThermogram() {
   $('high').textContent = settings.show_hi + ' °C';
   $('ramp').style.background = `linear-gradient(0deg,${palettes[settings.palette]})`;
   $('map-note').textContent = point ? `源热图像素 (${point.join(', ')})`
-    : state.tool ? `${tools[state.tool]} · 点选${state.start ? '另一端' : '起点'}`
-      : '浅色虚框为检查区，绿色虚框为参考区。';
+    : probing() ? '在热图上点选位置，查看同一像素修前、修后读数。'
+      : state.tool ? `${tools[state.tool]} · 点选${state.start ? '另一端' : '起点'}`
+        : '浅色虚框为检查区，绿色虚框为参考区。';
 }
 
 function drawContext() {
@@ -193,6 +208,16 @@ function summary(result) {
     const omitted = meta.omitted ? ` · 另有 ${meta.omitted} 个更小区未列表` : '';
     return `参考中位 ${meta.reference} °C · 低温门槛 ${meta.threshold} °C · 参考覆盖 ${meta.reference_coverage}%${omitted}`;
   }
+  if (result.mode === 'warm') {
+    const omitted = meta.omitted ? ` · 另有 ${meta.omitted} 个更小区未列表` : '';
+    const base = `修前「${result.baseline.title}」· 最小回暖温差 ${meta.threshold} °C · 可比较像素 ${meta.comparable} · 占检查框 ${meta.coverage}%`;
+    const recommendation = meta.recommendation;
+    if (!recommendation) return `${base} · 没有达到温差的回暖区${omitted}`;
+    const reason = recommendation.reason === 'magnitude' ? '本次看重回暖幅度（中位回暖最高）'
+      : recommendation.reason === 'coverage' ? '本次看重覆盖（回暖像素最多）'
+        : '回暖幅度与覆盖同为最大';
+    return `${base} · 推荐回看 ${recommendation.name}：${reason}${omitted}`;
+  }
   if (result.mode === 'profile') return `剖线 ${meta.length} mm · 有效样点 ${meta.valid} / ${result.rows.length}`;
   if (result.mode === 'distribution') return `有效像素 ${meta.valid} · 缺测 ${meta.missing}`;
   return result.mode === 'reference' ? '参考区读数用于设定低温门槛。' : '面积按原图有效读数与当前长度标尺计算。';
@@ -217,7 +242,9 @@ function drawReport() {
   $('columns').replaceChildren(header);
   $('rows').replaceChildren(...result.rows.map((row, index) => {
     const tr = node('tr', null);
-    for (const key of Object.keys(result.columns)) tr.append(node('td', format(row[key])));
+    for (const key of Object.keys(result.columns)) {
+      tr.append(node('td', key === 'name' && row.recommended ? '★ ' + row[key] : format(row[key])));
+    }
     if (row.point) {
       tr.setAttribute('data-point', row.point.join(','));
       tr.setAttribute('tabindex', '0');
@@ -228,7 +255,21 @@ function drawReport() {
     return tr;
   }));
   $('no-readings').hidden = !!result.rows.length;
+  $('no-readings').textContent = result.mode === 'warm' ? '检查框内没有达到所填温差的回暖。' : '当前范围没有符合条件的读数。';
   drawChart(result);
+}
+
+function drawProbes() {
+  const active = probing();
+  $('probe-card').hidden = !active;
+  if (!active) return;
+  $('probe-empty').hidden = !!state.probes.length;
+  $('probe-rows').replaceChildren(...state.probes.map((probe, index) => {
+    const tr = node('tr', null);
+    tr.append(node('td', `点 ${index + 1} (${probe.point.join(', ')})`), node('td', format(probe.before)),
+      node('td', format(probe.after)), node('td', format(probe.lift)));
+    return tr;
+  }));
 }
 
 function render() {
@@ -241,10 +282,13 @@ function render() {
   $('desk').hidden = false;
   $('controls').hidden = isArchive;
   $('cold-settings').hidden = result.mode !== 'cold';
+  $('warm-settings').hidden = result.mode !== 'warm';
+  $('area-settings').hidden = !(result.mode === 'cold' || result.mode === 'warm');
   $('distribution-settings').hidden = result.mode !== 'distribution';
   $('return-live').hidden = !isArchive;
   $('save').hidden = isArchive;
   $('downloads').hidden = !isArchive;
+  $('view-switch').hidden = !probing();
   const base = '/thermal' + panelPath();
   $('raw').href = base + '/raw.png';
   $('prepare-link').href = '/prepare?panel=' + encodeURIComponent(state.panel.id);
@@ -258,13 +302,18 @@ function render() {
   for (const button of $('modes').querySelectorAll('button')) {
     button.setAttribute('aria-pressed', String(button.dataset.mode === result.mode));
   }
+  for (const button of $('view-switch').querySelectorAll('button')) {
+    button.setAttribute('aria-pressed', String(button.dataset.view === state.view));
+  }
   drawThermogram();
   drawContext();
   drawReport();
+  drawProbes();
 }
 
 async function loadLibrary() {
   const panels = await api('/panels');
+  state.panels = panels;
   const buttons = panels.map(panel => {
     const label = node('button', panel.title, {'aria-pressed': String(panel.id === state.panel?.id)});
     label.append(node('small', `${panel.width} × ${panel.height} px`));
@@ -272,7 +321,30 @@ async function loadLibrary() {
     return label;
   });
   $('library').replaceChildren(...(buttons.length ? buttons : [node('small', '尚无热图')]));
+  loadBaseline();
   return panels;
+}
+
+function loadBaseline() {
+  const select = $('baseline');
+  if (!state.panel) {
+    select.replaceChildren();
+    state.baseline = null;
+    return;
+  }
+  const others = state.panels.filter(panel => panel.id !== state.panel.id
+    && panel.width === state.panel.width && panel.height === state.panel.height);
+  if (!others.some(panel => panel.id === state.baseline)) state.baseline = others[0]?.id || null;
+  const options = others.length ? others.map(panel => node('option', panel.title, {value: panel.id}))
+    : [node('option', '（热图库中没有同尺寸热图）', {value: ''})];
+  select.replaceChildren(...options);
+  select.value = state.baseline || '';
+  select.disabled = !others.length;
+}
+
+function pickRecommended() {
+  const index = shown()?.rows?.findIndex(row => row.recommended) ?? -1;
+  state.selection = index >= 0 ? index : null;
 }
 
 function loadArchive() {
@@ -281,9 +353,12 @@ function loadArchive() {
     button.append(node('small', new Date(check.created).toLocaleString('zh-CN')));
     button.onclick = action(async () => {
       const next = await api(panelPath() + '/checks/' + check.id);
-      await getImage(next.settings);
       state.archive = next;
-      state.selection = state.tool = state.start = null;
+      state.view = 'after';
+      state.probes = [];
+      await getImage(next.settings);
+      state.tool = state.start = null;
+      pickRecommended();
       loadArchive();
       render();
     });
@@ -298,14 +373,29 @@ async function getImage(settings) {
   state.image = URL.createObjectURL(blob);
 }
 
+async function getArchiveImage() {
+  if (state.view === 'before') {
+    const blob = await api(`${panelPath()}/checks/${state.archive.id}/baseline.png`, 'GET', undefined, 'blob');
+    if (state.image) URL.revokeObjectURL(state.image);
+    state.image = URL.createObjectURL(blob);
+    return;
+  }
+  await getImage(state.archive.settings);
+}
+
 async function refresh(next = state.draft, mode = state.mode) {
-  const report = await api(panelPath() + '/preview', 'POST', {settings: next, mode});
+  if (mode === 'warm' && !state.baseline) throw Error('热图库中没有同尺寸的修前热图，请先导入。');
+  const request = {settings: next, mode};
+  if (mode === 'warm') request.baseline = state.baseline;
+  const report = await api(panelPath() + '/preview', 'POST', request);
   await getImage(report.settings);
   state.draft = report.settings;
   state.mode = mode;
   state.archive = null;
   state.report = report;
-  state.selection = null;
+  state.view = 'after';
+  state.probes = [];
+  pickRecommended();
   showFields();
   loadArchive();
   render();
@@ -316,6 +406,8 @@ async function openPanel(panel) {
   state.draft = structuredClone(panel.settings);
   state.mode = 'cold';
   state.archive = state.tool = state.start = null;
+  state.view = 'after';
+  state.probes = [];
   state.contextOpen = false;
   localStorage.setItem('thermal-survey-panel', panel.id);
   await refresh();
@@ -368,17 +460,44 @@ $('retain').onclick = action(async () => {
   status('已保留标定和测温范围。');
 });
 $('save').onclick = action(async () => {
-  const saved = await api(panelPath() + '/checks', 'POST',
-    {revision: state.panel.revision, mode: state.mode, settings: formSettings()});
+  const request = {revision: state.panel.revision, mode: state.mode, settings: formSettings()};
+  if (state.mode === 'warm') {
+    if (!state.baseline) throw Error('热图库中没有同尺寸的修前热图，请先导入。');
+    request.baseline = state.baseline;
+  }
+  const saved = await api(panelPath() + '/checks', 'POST', request);
   await getImage(saved.check.settings);
   state.panel = saved.panel;
   state.archive = saved.check;
-  state.selection = state.tool = state.start = null;
+  state.view = 'after';
+  state.probes = [];
+  state.tool = state.start = null;
+  pickRecommended();
   loadArchive();
   render();
 });
 $('return-live').onclick = action(() => refresh());
 $('palette').onchange = action(() => refresh(formSettings()));
+
+$('baseline').onchange = action(async () => {
+  state.baseline = $('baseline').value || null;
+  if (state.mode === 'warm') await refresh(formSettings(), 'warm');
+});
+
+$('view-switch').querySelectorAll('button').forEach(button => {
+  button.onclick = action(async () => {
+    if (button.dataset.view === state.view) return;
+    state.view = button.dataset.view;
+    await getArchiveImage();
+    render();
+  });
+});
+
+$('clear-probes').onclick = () => {
+  state.probes = [];
+  drawThermogram();
+  drawProbes();
+};
 
 $('measure-tools').querySelectorAll('button').forEach(button => {
   button.onclick = () => {
@@ -388,6 +507,20 @@ $('measure-tools').querySelectorAll('button').forEach(button => {
   };
 });
 $('map').onclick = action(async event => {
+  if (probing()) {
+    const point = sourcePosition(event);
+    if (!point) return;
+    if (state.probes.length >= 30) {
+      status('最多保留 30 个点位，可先清除再点。', true);
+      return;
+    }
+    const points = [...state.probes.map(probe => probe.point), point];
+    const result = await api(`${panelPath()}/checks/${state.archive.id}/probes`, 'POST', {points});
+    state.probes = result.rows;
+    drawThermogram();
+    drawProbes();
+    return;
+  }
   if (!state.tool || state.archive) return;
   const point = sourcePosition(event);
   if (!point) return;

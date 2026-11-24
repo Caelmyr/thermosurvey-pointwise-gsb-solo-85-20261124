@@ -39,6 +39,7 @@ nav>small{color:var(--dim)}
 .card-head{display:flex;justify-content:space-between;align-items:center;gap:.6rem;flex-wrap:wrap;padding:.6rem .8rem;border-bottom:1px solid var(--edge)}
 .card-head h2{font-size:.97rem}
 .map-tools,.report-actions,.actions{display:flex;gap:.4rem;align-items:center;flex-wrap:wrap}
+.view-switch{display:inline-flex;gap:.3rem}
 .map-tools>a,#downloads>a{font-size:.79rem;color:var(--teal);padding:.35rem}
 .thermogram{display:grid;grid-template-columns:minmax(0,1fr) 52px;gap:.65rem;padding:.73rem}
 .map-frame{background:#19191e;display:grid;place-items:center;min-height:150px}
